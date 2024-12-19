@@ -183,12 +183,9 @@ class QuantizersTest(testing.TestCase):
                 )
 
                 # Compute gradients
-                result.backward(torch.ones_like(result))  # Compute gradient
+                result.backward(torch.ones_like(result))
 
-                # Multiply gradients by initial_gradients
-                gradients = initial_gradients * inputs.grad
-
-                return gradients
+                return initial_gradients * inputs.grad
 
             gradients = test_op(
                 inputs, input_min, input_max, num_bits, narrow_range
@@ -210,10 +207,7 @@ class QuantizersTest(testing.TestCase):
                 # Compute gradients
                 input_gradients = grad_fn(inputs)
 
-                # Multiply by initial gradients
-                gradients = initial_gradients * input_gradients
-
-                return gradients
+                return initial_gradients * input_gradients
 
             gradients = test_op(
                 inputs, input_min, input_max, num_bits, narrow_range
