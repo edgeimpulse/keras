@@ -165,6 +165,8 @@ class QuantizersTest(testing.TestCase):
             gradients = test_op(
                 inputs, input_min, input_max, num_bits, narrow_range
             )
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops)
 
         if backend.backend() == "torch":
             import torch
@@ -191,9 +193,8 @@ class QuantizersTest(testing.TestCase):
             gradients = test_op(
                 inputs, input_min, input_max, num_bits, narrow_range
             )
-
-        # test gradients
-        self.assertAllClose(gradients, expected_backprops)
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops)
 
         outputs = op(
             inputs,
