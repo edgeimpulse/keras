@@ -133,8 +133,7 @@ def adjust_and_nudge(min_range, max_range, num_bits, narrow_range):
         raise ValueError("num_bits must be >= 2")
 
     n_steps = ops.cast(2**num_bits - 1, "float32")
-    if narrow_range:
-        n_steps -= 1.0
+    n_steps = n_steps if not narrow_range else n_steps - 1.0
 
     # Handle the case where min and max are too close
     if abs(max_range - min_range) < 1e-10:

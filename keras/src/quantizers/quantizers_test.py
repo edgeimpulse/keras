@@ -196,6 +196,31 @@ class QuantizersTest(testing.TestCase):
             # test gradients
             self.assertAllClose(gradients, expected_backprops)
 
+        if backend.backend() == "jax":
+            import jax
+
+            def test_op(inputs, input_min, input_max, num_bits, narrow_range):
+                # Define the function to compute gradients for
+                def quantize_fn(x):
+                    return op(x, input_min, input_max, num_bits, narrow_range)
+
+                # Get the gradient function
+                grad_fn = jax.grad(lambda x: ops.sum(quantize_fn(x)))
+
+                # Compute gradients
+                input_gradients = grad_fn(inputs)
+
+                # Multiply by initial gradients
+                gradients = initial_gradients * input_gradients
+
+                return gradients
+
+            gradients = test_op(
+                inputs, input_min, input_max, num_bits, narrow_range
+            )
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops)
+
         outputs = op(
             inputs,
             input_min,
