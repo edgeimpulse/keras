@@ -202,7 +202,7 @@ class QuantizersTest(testing.TestCase):
                     return op(x, input_min, input_max, num_bits, narrow_range)
 
                 # Get the gradient function
-                grad_fn = jax.grad(lambda x: ops.sum(quantize_fn(x)))
+                grad_fn = jax.jit(jax.grad(lambda x: ops.sum(quantize_fn(x))))
 
                 # Compute gradients
                 input_gradients = grad_fn(inputs)
@@ -238,6 +238,10 @@ class QuantizersTest(testing.TestCase):
         num_channels = len(input_mins)
         inputs_list = []
         expected_list = []
+        initial_gradients_list = []
+        expected_backprops_wrt_input_list = []
+        expected_backprops_wrt_min_list = []
+        expected_backprops_wrt_max_list = []
         for i in range(num_channels):
             expected_nudged_input_min = expected_nudged_input_mins[i]
             expected_nudged_input_max = expected_nudged_input_maxs[i]
@@ -273,10 +277,88 @@ class QuantizersTest(testing.TestCase):
                     expected_nudged_input_max,
                 ]
             )
+            initial_gradients_list.append(
+                list(range(1, len(inputs_list[-1]) + 1))
+            )
+            expected_backprops_wrt_input_list.append(
+                [0.0, 0.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0]
+            )
+            expected_backprops_wrt_min_list.append(1.0 + 2.0)
+            expected_backprops_wrt_max_list.append(10.0 + 11.0)
         inputs = ops.transpose(ops.array(inputs_list, dtype="float32"))
         expected = ops.transpose(ops.array(expected_list, dtype="float32"))
+        expected_backprops_wrt_input = ops.transpose(
+            ops.array(expected_backprops_wrt_input_list, dtype="float32")
+        )
         input_min = ops.array(input_mins, dtype="float32")
         input_max = ops.array(input_maxs, dtype="float32")
+        initial_gradients = ops.transpose(
+            ops.array(initial_gradients_list, dtype="float32")
+        )
+        if backend.backend() == "tensorflow":
+            import tensorflow as tf
+
+            @tf.function(jit_compile=True)
+            def test_op(inputs, input_mins, input_maxs, num_bits, narrow_range):
+                with tf.GradientTape() as tape:
+                    tape.watch(inputs)
+                    result = op(
+                        inputs, input_mins, input_maxs, num_bits, narrow_range
+                    )
+                return initial_gradients * tape.gradient(result, inputs)
+
+            gradients = test_op(
+                inputs, input_mins, input_maxs, num_bits, narrow_range
+            )
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops_wrt_input)
+
+        if backend.backend() == "torch":
+            import torch
+
+            def test_op(inputs, input_min, input_max, num_bits, narrow_range):
+                # Create tensor and enable gradient tracking
+                inputs = torch.tensor(
+                    inputs, dtype=torch.float32, requires_grad=True
+                )
+
+                # Apply the quantization operation
+                result = op(
+                    inputs, input_mins, input_maxs, num_bits, narrow_range
+                )
+
+                # Compute gradients
+                result.backward(torch.ones_like(result))
+
+                return initial_gradients * inputs.grad
+
+            gradients = test_op(
+                inputs, input_min, input_max, num_bits, narrow_range
+            )
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops_wrt_input)
+
+        if backend.backend() == "jax":
+            import jax
+
+            def test_op(inputs, input_mins, input_maxs, num_bits, narrow_range):
+                # Define the function to compute gradients for
+                def quantize_fn(x):
+                    return op(x, input_mins, input_maxs, num_bits, narrow_range)
+
+                # Get the gradient function
+                grad_fn = jax.jit(jax.grad(lambda x: ops.sum(quantize_fn(x))))
+
+                # Compute gradients
+                input_gradients = grad_fn(inputs)
+
+                return initial_gradients * input_gradients
+
+            gradients = test_op(
+                inputs, input_min, input_max, num_bits, narrow_range
+            )
+            # test gradients
+            self.assertAllClose(gradients, expected_backprops_wrt_input)
         outputs = op(
             inputs,
             input_min,
