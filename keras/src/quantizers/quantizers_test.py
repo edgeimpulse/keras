@@ -104,129 +104,6 @@ class QuantizersTest(testing.TestCase):
 
     def _TestOp(
         self,
-        op,
-        input_min,
-        input_max,
-        num_bits,
-        narrow_range,
-        expected_nudged_input_min,
-        expected_nudged_input_max,
-        expected_step,
-    ):
-        inputs = ops.array(
-            [
-                expected_nudged_input_min - expected_step,
-                expected_nudged_input_min - 0.01,
-                expected_nudged_input_min,
-                expected_nudged_input_min + 0.01,
-                expected_nudged_input_min + expected_step - 0.01,
-                expected_nudged_input_min + expected_step,
-                expected_nudged_input_min + expected_step + 0.01,
-                expected_nudged_input_max - 0.01,
-                expected_nudged_input_max,
-                expected_nudged_input_max + 0.01,
-                expected_nudged_input_max + expected_step,
-            ],
-            dtype="float32",
-        )
-        expected = ops.array(
-            [
-                expected_nudged_input_min,
-                expected_nudged_input_min,
-                expected_nudged_input_min,
-                expected_nudged_input_min,
-                expected_nudged_input_min + expected_step,
-                expected_nudged_input_min + expected_step,
-                expected_nudged_input_min + expected_step,
-                expected_nudged_input_max,
-                expected_nudged_input_max,
-                expected_nudged_input_max,
-                expected_nudged_input_max,
-            ],
-            dtype="float32",
-        )
-        initial_gradients = ops.arange(1, len(inputs) + 1, dtype="float32")
-        expected_backprops = ops.array(
-            [0.0, 0.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 0.0, 0.0],
-            dtype=float,
-        )
-        if backend.backend() == "tensorflow":
-            import tensorflow as tf
-
-            @tf.function(jit_compile=True)
-            def test_op(inputs, input_min, input_max, num_bits, narrow_range):
-                with tf.GradientTape() as tape:
-                    tape.watch(inputs)
-                    result = op(
-                        inputs, input_min, input_max, num_bits, narrow_range
-                    )
-                return initial_gradients * tape.gradient(result, inputs)
-
-            gradients = test_op(
-                inputs, input_min, input_max, num_bits, narrow_range
-            )
-            # test gradients
-            self.assertAllClose(gradients, expected_backprops)
-
-        if backend.backend() == "torch":
-            import torch
-
-            def test_op(inputs, input_min, input_max, num_bits, narrow_range):
-                # Create tensor and enable gradient tracking
-                inputs = torch.tensor(
-                    inputs, dtype=torch.float32, requires_grad=True
-                )
-
-                # Apply the quantization operation
-                result = op(
-                    inputs, input_min, input_max, num_bits, narrow_range
-                )
-
-                # Compute gradients
-                result.backward(torch.ones_like(result))
-
-                return initial_gradients * inputs.grad
-
-            gradients = test_op(
-                inputs, input_min, input_max, num_bits, narrow_range
-            )
-            # test gradients
-            self.assertAllClose(gradients, expected_backprops)
-
-        if backend.backend() == "jax":
-            import jax
-
-            def test_op(inputs, input_min, input_max, num_bits, narrow_range):
-                # Define the function to compute gradients for
-                def quantize_fn(x):
-                    return op(x, input_min, input_max, num_bits, narrow_range)
-
-                # Get the gradient function
-                grad_fn = jax.jit(jax.grad(lambda x: ops.sum(quantize_fn(x))))
-
-                # Compute gradients
-                input_gradients = grad_fn(inputs)
-
-                return initial_gradients * input_gradients
-
-            gradients = test_op(
-                inputs, input_min, input_max, num_bits, narrow_range
-            )
-            # test gradients
-            self.assertAllClose(gradients, expected_backprops)
-
-        outputs = op(
-            inputs,
-            input_min,
-            input_max,
-            num_bits=num_bits,
-            narrow_range=narrow_range,
-        )
-        self.assertAllClose(outputs, expected)
-
-    def _TestChannelsOp(
-        self,
-        op,
         input_mins,
         input_maxs,
         num_bits,
@@ -298,8 +175,14 @@ class QuantizersTest(testing.TestCase):
             def test_op(inputs, input_mins, input_maxs, num_bits, narrow_range):
                 with tf.GradientTape() as tape:
                     tape.watch(inputs)
-                    result = op(
-                        inputs, input_mins, input_maxs, num_bits, narrow_range
+                    result = (
+                        quantizers.fake_quant_with_min_max_vars_per_channel(
+                            inputs,
+                            input_mins,
+                            input_maxs,
+                            num_bits,
+                            narrow_range,
+                        )
                     )
                 return initial_gradients * tape.gradient(result, inputs)
 
@@ -319,7 +202,7 @@ class QuantizersTest(testing.TestCase):
                 )
 
                 # Apply the quantization operation
-                result = op(
+                result = quantizers.fake_quant_with_min_max_vars_per_channel(
                     inputs, input_mins, input_maxs, num_bits, narrow_range
                 )
 
@@ -340,7 +223,9 @@ class QuantizersTest(testing.TestCase):
             def test_op(inputs, input_mins, input_maxs, num_bits, narrow_range):
                 # Define the function to compute gradients for
                 def quantize_fn(x):
-                    return op(x, input_mins, input_maxs, num_bits, narrow_range)
+                    return quantizers.fake_quant_with_min_max_vars_per_channel(
+                        x, input_mins, input_maxs, num_bits, narrow_range
+                    )
 
                 # Get the gradient function
                 grad_fn = jax.jit(jax.grad(lambda x: ops.sum(quantize_fn(x))))
@@ -355,7 +240,7 @@ class QuantizersTest(testing.TestCase):
             )
             # test gradients
             self.assertAllClose(gradients, expected_backprops_wrt_input)
-        outputs = op(
+        outputs = quantizers.fake_quant_with_min_max_vars_per_channel(
             inputs,
             input_min,
             input_max,
@@ -364,205 +249,188 @@ class QuantizersTest(testing.TestCase):
         )
         self.assertAllClose(outputs, expected)
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsNoSclngNoNdgng(self):
+    def test_fakeQuantWithMinMax_8BitsNoSclngNoNdgng(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.0,
-            255.0,
+            [0.0],
+            [255.0],
             8,
             False,
-            0.0,
-            255.0,
-            1.0,
+            [0.0],
+            [255.0],
+            [1.0],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsSclngAndNdgngDown(self):
+    def test_fakeQuantWithMinMax_8BitsSclngAndNdgngDown(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.5,
-            128.0,
+            [0.5],
+            [128.0],
             8,
             False,
-            0.0,
-            127.5,
-            0.5,
+            [0.0],
+            [127.5],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsSclngAndNdgngUp(self):
+    def test_fakeQuantWithMinMax_8BitsSclngAndNdgngUp(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -128.0,
-            -0.5,
+            [-128.0],
+            [-0.5],
             8,
             False,
-            -127.5,
-            0.0,
-            0.5,
+            [-127.5],
+            [0.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsSclngAndNdgngBtwn(self):
+    def test_fakeQuantWithMinMax_8BitsSclngAndNdgngBtwn(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -0.1,
-            127.4,
+            [-0.1],
+            [127.4],
             8,
             False,
-            0.0,
-            127.5,
-            0.5,
+            [0.0],
+            [127.5],
+            [0.5],
         )
 
     # 8 bits, narrow range.
-    def test_fakeQuantWithMinMaxArgs_with8BitsNrrwRangeNoSclngNoNdgng(self):
+    def test_fakeQuantWithMinMax_8BitsNrrwRangeNoSclngNoNdgng(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.0,
-            254.0,
+            [0.0],
+            [254.0],
             8,
             True,
-            0.0,
-            254.0,
-            1.0,
+            [0.0],
+            [254.0],
+            [1.0],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsNrrwRangeSclngAndNdgngDown(self):
+    def test_fakeQuantWithMinMax_8BitsNrrwRangeSclngAndNdgngDown(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.1,
-            127.1,
+            [0.1],
+            [127.1],
             8,
             True,
-            0.0,
-            127.0,
-            0.5,
+            [0.0],
+            [127.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsNrrwRangeSclngAndNdgngUp(self):
+    def test_fakeQuantWithMinMax_8BitsNrrwRangeSclngAndNdgngUp(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -127.1,
-            -0.1,
+            [-127.1],
+            [-0.1],
             8,
             True,
-            -127.0,
-            0.0,
-            0.5,
+            [-127.0],
+            [0.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with8BitsNrrwRangeSclngAndNdgngBtwn(self):
+    def test_fakeQuantWithMinMax_8BitsNrrwRangeSclngAndNdgngBtwn(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -0.1,
-            126.9,
+            [-0.1],
+            [126.9],
             8,
             True,
-            0.0,
-            127.0,
-            0.5,
+            [0.0],
+            [127.0],
+            [0.5],
         )
 
     # 7 bits, wide range.
-    def test_fakeQuantWithMinMaxArgs_with7BitsNoSclngNoNdgng(self):
+    def test_fakeQuantWithMinMax_7BitsNoSclngNoNdgng(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.0,
-            127.0,
+            [0.0],
+            [127.0],
             7,
             False,
-            0.0,
-            127.0,
-            1.0,
+            [0.0],
+            [127.0],
+            [1.0],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsSclngAndNdgngDown(self):
+    def test_fakeQuantWithMinMax_7BitsSclngAndNdgngDown(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.5,
-            64.0,
+            [0.5],
+            [64.0],
             7,
             False,
-            0.0,
-            63.5,
-            0.5,
+            [0.0],
+            [63.5],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsSclngAndNdgngUp(self):
+    def test_fakeQuantWithMinMax_7BitsSclngAndNdgngUp(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -64.0,
-            -0.5,
+            [-64.0],
+            [-0.5],
             7,
             False,
-            -63.5,
-            0.0,
-            0.5,
+            [-63.5],
+            [0.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsSclngAndNdgngBtwn(self):
+    def test_fakeQuantWithMinMax_7BitsSclngAndNdgngBtwn(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -0.1,
-            63.4,
+            [-0.1],
+            [63.4],
             7,
             False,
-            0.0,
-            63.5,
-            0.5,
+            [0.0],
+            [63.5],
+            [0.5],
         )
 
     # 7 bits, narrow range.
-    def test_fakeQuantWithMinMaxArgs_with7BitsNrrwRangeNoSclngNoNdgng(self):
+    def test_fakeQuantWithMinMax_7BitsNrrwRangeNoSclngNoNdgng(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.0,
-            126.0,
+            [0.0],
+            [126.0],
             7,
             True,
-            0.0,
-            126.0,
-            1.0,
+            [0.0],
+            [126.0],
+            [1.0],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsNrrwRangeSclngAndNdgngDown(self):
+    def test_fakeQuantWithMinMax_7BitsNrrwRangeSclngAndNdgngDown(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            0.1,
-            63.1,
+            [0.1],
+            [63.1],
             7,
             True,
-            0.0,
-            63.0,
-            0.5,
+            [0.0],
+            [63.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsNrrwRangeSclngAndNdgngUp(self):
+    def test_fakeQuantWithMinMax_7BitsNrrwRangeSclngAndNdgngUp(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -63.1,
-            -0.1,
+            [-63.1],
+            [-0.1],
             7,
             True,
-            -63.0,
-            0.0,
-            0.5,
+            [-63.0],
+            [0.0],
+            [0.5],
         )
 
-    def test_fakeQuantWithMinMaxArgs_with7BitsNrrwRangeSclngAndNdgngBtwn(self):
+    def test_fakeQuantWithMinMax_7BitsNrrwRangeSclngAndNdgngBtwn(self):
         self._TestOp(
-            quantizers.fake_quant_with_min_max_args,
-            -0.1,
-            62.9,
+            [-0.1],
+            [62.9],
             7,
             True,
-            0.0,
-            63.0,
-            0.5,
+            [0.0],
+            [63.0],
+            [0.5],
         )
 
     # 8 bits, wide range.
-    def test_fakeQuantWithMinMaxVarsPerChannel_with8Bits(self):
-        self._TestChannelsOp(
-            quantizers.fake_quant_with_min_max_vars_per_channel,
+    def test_fakeQuantWithMinMax_8Bits(self):
+        self._TestOp(
             [0.0, 0.5, -128.0, -0.1],
             [255.0, 128.0, -0.5, 127.4],
             8,
@@ -573,9 +441,8 @@ class QuantizersTest(testing.TestCase):
         )
 
     # 8 bits, narrow range.
-    def test_fakeQuantWithMinMaxVarsPerChannel_with8BitsNarrowRange(self):
-        self._TestChannelsOp(
-            quantizers.fake_quant_with_min_max_vars_per_channel,
+    def test_fakeQuantWithMinMax_8BitsNarrowRange(self):
+        self._TestOp(
             [0.0, 0.1, -127.1, -0.1],
             [254.0, 127.1, -0.1, 126.9],
             8,
@@ -586,9 +453,8 @@ class QuantizersTest(testing.TestCase):
         )
 
     # 7 bits, wide range.
-    def test_fakeQuantWithMinMaxVarsPerChannel_with7Bits(self):
-        self._TestChannelsOp(
-            quantizers.fake_quant_with_min_max_vars_per_channel,
+    def test_fakeQuantWithMinMax_7Bits(self):
+        self._TestOp(
             [0.0, 0.5, -64.0, -0.1],
             [127.0, 64.0, -0.5, 63.4],
             7,
@@ -599,9 +465,8 @@ class QuantizersTest(testing.TestCase):
         )
 
     # 7 bits, narrow range.
-    def test_fakeQuantWithMinMaxVarsPerChannel_with7BitsNarrowRange(self):
-        self._TestChannelsOp(
-            quantizers.fake_quant_with_min_max_vars_per_channel,
+    def test_fakeQuantWithMinMax_7BitsNarrowRange(self):
+        self._TestOp(
             [0.0, 0.1, -63.1, -0.1],
             [126.0, 63.1, -0.1, 62.9],
             7,
